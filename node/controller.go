@@ -1,7 +1,6 @@
 package node
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -66,9 +65,7 @@ func (c *Controller) Start() error {
 	if err != nil {
 		return fmt.Errorf("get user list error: %s", err)
 	}
-	if len(c.userList) == 0 {
-		return errors.New("add users error: not have any user")
-	}
+	// An empty authorized list is valid: keep polling for renewals.
 	c.aliveMap, err = c.getAPIClient().GetUserAlive()
 	if err != nil {
 		return fmt.Errorf("failed to get user alive list: %s", err)

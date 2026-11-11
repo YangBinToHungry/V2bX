@@ -39,7 +39,12 @@ func (h *HookServer) LogTraffic(id string, tx, rx uint64) (ok bool) {
 		return false
 	}
 
-	if userLimit, found := limiterinfo.UserLimitInfo.Load(format.UserTag(h.Tag, id)); found {
+	userLimit, found := limiterinfo.UserLimitInfo.Load(format.UserTag(h.Tag, id))
+	if !found {
+		// Reject traffic on already-authenticated QUIC sessions after revocation.
+		return false
+	}
+	{
 		userlimitInfo := userLimit.(*limiter.UserLimitInfo)
 		// W2.7 / audit #27 #48: CompareAndSwap so the flip-and-skip is atomic.
 		// Without it, two concurrent LogTraffic calls could both observe true,

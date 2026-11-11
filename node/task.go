@@ -165,8 +165,8 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 		c.limiter.AliveList.Store(&newA)
 	}
 
-	// check users
-	if len(newU) == 0 {
+	// nil means HTTP 304 (unchanged); an empty list revokes every user.
+	if newU == nil {
 		return nil
 	}
 	deleted, added, modified := compareUserList(c.userList, newU)

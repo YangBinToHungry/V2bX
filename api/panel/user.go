@@ -100,6 +100,10 @@ func (c *Client) GetUserListCtx(ctx context.Context) ([]UserInfo, error) {
 		}
 	}
 	c.userEtag = r.Header().Get("ETag")
+	// Preserve the distinction between a valid empty response and HTTP 304.
+	if userlist.Users == nil {
+		userlist.Users = []UserInfo{}
+	}
 	return userlist.Users, nil
 }
 
