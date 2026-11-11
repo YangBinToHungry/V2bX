@@ -11,7 +11,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/InazumaV/V2bX/common/file"
+	"github.com/Sakawat-hossain/V2bX/common/file"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -90,23 +90,25 @@ func generateSelfSslCertificate(domain, certPath, keyPath string) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(certPath, os.O_CREATE|os.O_RDWR, 0644)
+	certFile, err := os.OpenFile(certPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
-	err = pem.Encode(f, &pem.Block{
+	defer certFile.Close()
+	err = pem.Encode(certFile, &pem.Block{
 		Type:  "CERTIFICATE",
 		Bytes: cert,
 	})
 	if err != nil {
 		return err
 	}
-	f, err = os.OpenFile(keyPath, os.O_CREATE|os.O_RDWR, 0644)
+	keyFile, err := os.OpenFile(keyPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
-	err = pem.Encode(f, &pem.Block{
-		Type:  "EC PRIVATE KEY",
+	defer keyFile.Close()
+	err = pem.Encode(keyFile, &pem.Block{
+		Type:  "RSA PRIVATE KEY",
 		Bytes: x509.MarshalPKCS1PrivateKey(key),
 	})
 	if err != nil {

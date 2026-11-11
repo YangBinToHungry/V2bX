@@ -1,17 +1,17 @@
 package cmd
 
 import (
-	"github.com/InazumaV/V2bX/conf"
-	vCore "github.com/InazumaV/V2bX/core"
-	"github.com/InazumaV/V2bX/limiter"
-	"github.com/InazumaV/V2bX/node"
-	log "github.com/sirupsen/logrus"
-	"github.com/spf13/cobra"
-	"gopkg.in/natefinch/lumberjack.v2"
 	"os"
 	"os/signal"
 	"runtime"
 	"syscall"
+
+	"github.com/Sakawat-hossain/V2bX/conf"
+	vCore "github.com/Sakawat-hossain/V2bX/core"
+	"github.com/Sakawat-hossain/V2bX/limiter"
+	"github.com/Sakawat-hossain/V2bX/node"
+	log "github.com/sirupsen/logrus"
+	"github.com/spf13/cobra"
 )
 
 var (
@@ -54,15 +54,20 @@ func serverHandle(_ *cobra.Command, _ []string) {
 	case "error":
 		log.SetLevel(log.ErrorLevel)
 	}
+	var logFile *os.File
 	if c.LogConfig.Output != "" {
-		w := &lumberjack.Logger{
-			Filename:   c.LogConfig.Output,
-			MaxSize:    100,
-			MaxBackups: 3,
-			MaxAge:     28,
-			Compress:   true,
+		logFile, err = os.OpenFile(c.LogConfig.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			log.WithField("err", err).Error("Open log file failed, using stdout instead")
+		} else {
+			log.SetOutput(logFile)
 		}
-		log.SetOutput(w)
+	}
+	// Validate configuration
+	if warnings := c.Validate(); len(warnings) > 0 {
+		for _, w := range warnings {
+			log.WithField("warning", w).Warn("Config validation")
+		}
 	}
 	limiter.Init()
 	log.Info("Start V2bX...")
@@ -124,7 +129,14 @@ func serverHandle(_ *cobra.Command, _ []string) {
 	// wait exit signal
 	{
 		osSignals := make(chan os.Signal, 1)
-		signal.Notify(osSignals, syscall.SIGINT, syscall.SIGKILL, syscall.SIGTERM)
+		signal.Notify(osSignals, syscall.SIGINT, syscall.SIGTERM)
 		<-osSignals
+	}
+	// graceful shutdown
+	log.Info("Shutting down...")
+	c.StopWatch()
+	nodes.Close()
+	if logFile != nil {
+		logFile.Close()
 	}
 }

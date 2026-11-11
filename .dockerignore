@@ -1,0 +1,30 @@
+# Keep the Docker build context small — the build only needs Go source +
+# go.mod/go.sum. Everything below is irrelevant to compilation.
+.git
+.github
+.gitignore
+.dockerignore
+
+# Large geo data (downloaded at deploy time, never built in)
+*.dat
+*.db
+
+# Release/build artifacts
+*.zip
+/V2bX
+/v2bx
+dist/
+
+# Docs, assets, install scripts, examples
+README*.md
+LICENSE
+logo.png
+V2bX-script-master/
+example/
+docs/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+*.log

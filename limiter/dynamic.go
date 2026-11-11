@@ -3,15 +3,14 @@ package limiter
 import (
 	"time"
 
-	"github.com/InazumaV/V2bX/api/panel"
-	"github.com/InazumaV/V2bX/common/format"
+	"github.com/Sakawat-hossain/V2bX/api/panel"
+	"github.com/Sakawat-hossain/V2bX/common/format"
 )
 
 func (l *Limiter) AddDynamicSpeedLimit(tag string, userInfo *panel.UserInfo, limitNum int, expire int64) error {
-	userLimit := &UserLimitInfo{
-		DynamicSpeedLimit: limitNum,
-		ExpireTime:        time.Now().Add(time.Duration(expire) * time.Second).Unix(),
-	}
+	userLimit := &UserLimitInfo{}
+	userLimit.DynamicSpeedLimit.Store(int64(limitNum))
+	userLimit.ExpireTime.Store(time.Now().Add(time.Duration(expire) * time.Second).Unix())
 	l.UserLimitInfo.Store(format.UserTag(tag, userInfo.Uuid), userLimit)
 	return nil
 }

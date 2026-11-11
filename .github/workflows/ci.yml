@@ -1,0 +1,39 @@
+name: CI
+
+# Build, vet, and test on every push/PR to main so a broken commit is caught
+# before it's tagged for release.
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    env:
+      # Must match the Dockerfile / release workflow so CI exercises the real
+      # build configuration.
+      GOEXPERIMENT: jsonv2
+      GOFLAGS: -tags=sing,xray,hysteria2,with_quic,with_grpc,with_utls,with_wireguard,with_acme,with_gvisor
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build -v -o /dev/null .
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        # -short skips integration smoke tests that need external services
+        # (e.g. a live panel); unit tests still run.
+        run: go test -short ./...

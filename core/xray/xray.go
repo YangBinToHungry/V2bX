@@ -1,14 +1,17 @@
 package xray
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 
-	"github.com/InazumaV/V2bX/conf"
-	vCore "github.com/InazumaV/V2bX/core"
-	"github.com/InazumaV/V2bX/core/xray/app/dispatcher"
-	_ "github.com/InazumaV/V2bX/core/xray/distro/all"
-	"github.com/goccy/go-json"
+	"encoding/json/v2"
+
+	"github.com/Sakawat-hossain/V2bX/conf"
+	vCore "github.com/Sakawat-hossain/V2bX/core"
+	"github.com/Sakawat-hossain/V2bX/core/xray/app/dispatcher"
+	_ "github.com/Sakawat-hossain/V2bX/core/xray/distro/all"
 	log "github.com/sirupsen/logrus"
 	"github.com/xtls/xray-core/app/proxyman"
 	"github.com/xtls/xray-core/app/stats"
@@ -17,26 +20,46 @@ import (
 	"github.com/xtls/xray-core/features/inbound"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/routing"
-	statsFeature "github.com/xtls/xray-core/features/stats"
 	coreConf "github.com/xtls/xray-core/infra/conf"
 )
+
+var _ vCore.Core = (*Xray)(nil)
 
 func init() {
 	vCore.RegisterCore("xray", New)
 }
 
-// Core Structure
-type Core struct {
+// Xray Structure
+type Xray struct {
 	access     sync.Mutex
 	Server     *core.Instance
 	ihm        inbound.Manager
 	ohm        outbound.Manager
-	shm        statsFeature.Manager
 	dispatcher *dispatcher.DefaultDispatcher
+	users      *UserMap
+	// W2.2 / audit #12 #14 #34: nodeReportMinTrafficBytes is written by AddNode
+	// / UpdateNodeReportMinTraffic / DelNode (config-driven goroutines) and
+	// concurrently read by GetUserTrafficSlice (report goroutine) for every
+	// counter entry. A bare map here panics under load. reportMu (separate
+	// from `access`, which gates Start/Close only) keeps the hot read path
+	// cheap with RLock.
+	reportMu                  sync.RWMutex
+	nodeReportMinTrafficBytes map[string]int64
+}
+
+type UserMap struct {
+	uidMap  map[string]int
+	mapLock sync.RWMutex
 }
 
 func New(c *conf.CoreConfig) (vCore.Core, error) {
-	return &Core{Server: getCore(c.XrayConfig)}, nil
+	return &Xray{
+		Server: getCore(c.XrayConfig),
+		users: &UserMap{
+			uidMap: make(map[string]int),
+		},
+		nodeReportMinTrafficBytes: make(map[string]int64),
+	}, nil
 }
 
 func parseConnectionConfig(c *conf.XrayConnectionConfig) (policy *coreConf.Policy) {
@@ -55,23 +78,43 @@ func parseConnectionConfig(c *conf.XrayConnectionConfig) (policy *coreConf.Polic
 func getCore(c *conf.XrayConfig) *core.Instance {
 	os.Setenv("XRAY_LOCATION_ASSET", c.AssetPath)
 	// Log Config
-	coreLogConfig := &coreConf.LogConfig{}
-	coreLogConfig.LogLevel = c.LogConfig.Level
-	coreLogConfig.AccessLog = c.LogConfig.AccessPath
-	coreLogConfig.ErrorLog = c.LogConfig.ErrorPath
+	applyLogRotateOptions(c.LogConfig)
+	if p := c.LogConfig.ErrorPath; p != "" && p != "none" {
+		if err := ensureLogWritable(p); err != nil {
+			log.WithFields(log.Fields{"path": p, "err": err}).
+				Warn("Error log file not writable, error logs may be dropped")
+		}
+	}
+	coreLogConfig := &coreConf.LogConfig{
+		LogLevel:  c.LogConfig.Level,
+		AccessLog: resolveAccessLogPath(c.LogConfig.AccessPath),
+		ErrorLog:  c.LogConfig.ErrorPath,
+	}
 	// DNS config
 	coreDnsConfig := &coreConf.DNSConfig{}
-	os.Setenv("XRAY_DNS_PATH", "")
-	if c.DnsConfigPath != "" {
-		if f, err := os.Open(c.DnsConfigPath); err != nil {
-			log.WithField("err", err).Panic("Failed to read DNS config file")
-		} else {
-			if err = json.NewDecoder(f).Decode(coreDnsConfig); err != nil {
-				log.WithField("err", err).Error("Failed to unmarshal DNS config")
-			}
-		}
-		os.Setenv("XRAY_DNS_PATH", c.DnsConfigPath)
+	// Panel-pushed DNS-unlock routes are rendered into this file by
+	// updateDNSConfig and hot-reloaded via the config watcher. Previously
+	// DnsConfigPath defaulted to "" which left XRAY_DNS_PATH empty, so
+	// updateDNSConfig's os.ReadFile("") failed ("Failed to read XRAY_DNS_PATH:
+	// open : no such file") and EVERY panel DNS rule was silently dropped.
+	// Default to <AssetPath>/dns.json so the feature works without the operator
+	// having to manually set DnsConfigPath.
+	dnsPath := c.DnsConfigPath
+	if dnsPath == "" {
+		dnsPath = filepath.Join(c.AssetPath, "dns.json")
 	}
+	if data, err := os.ReadFile(dnsPath); err != nil {
+		// A missing file is expected on first run — updateDNSConfig will create
+		// it. Only surface the error when the operator explicitly set a path.
+		if c.DnsConfigPath != "" {
+			log.Error(fmt.Sprintf("Failed to read xray dns config file: %v", err))
+		}
+		coreDnsConfig = &coreConf.DNSConfig{}
+	} else if err := json.Unmarshal(data, coreDnsConfig); err != nil {
+		log.Error(fmt.Sprintf("Failed to unmarshal xray dns config: %v. Using default DNS options.", err))
+		coreDnsConfig = &coreConf.DNSConfig{}
+	}
+	os.Setenv("XRAY_DNS_PATH", dnsPath)
 	dnsConfig, err := coreDnsConfig.Build()
 	if err != nil {
 		log.WithField("err", err).Panic("Failed to understand DNS config, Please check: https://xtls.github.io/config/dns.html for help")
@@ -79,25 +122,27 @@ func getCore(c *conf.XrayConfig) *core.Instance {
 	// Routing config
 	coreRouterConfig := &coreConf.RouterConfig{}
 	if c.RouteConfigPath != "" {
-		if f, err := os.Open(c.RouteConfigPath); err != nil {
+		data, err := os.ReadFile(c.RouteConfigPath)
+		if err != nil {
 			log.WithField("err", err).Panic("Failed to read Routing config file")
 		} else {
-			if err = json.NewDecoder(f).Decode(coreRouterConfig); err != nil {
+			if err = json.Unmarshal(data, coreRouterConfig); err != nil {
 				log.WithField("err", err).Panic("Failed to unmarshal Routing config")
 			}
 		}
 	}
 	routeConfig, err := coreRouterConfig.Build()
 	if err != nil {
-		log.WithField("err", err).Panic("Failed to understand Routing config  Please check: https://xtls.github.io/config/routing.html")
+		log.WithField("err", err).Panic("Failed to understand Routing config. Please check: https://xtls.github.io/config/routing.html for help")
 	}
 	// Custom Inbound config
 	var coreCustomInboundConfig []coreConf.InboundDetourConfig
 	if c.InboundConfigPath != "" {
-		if f, err := os.Open(c.InboundConfigPath); err != nil {
+		data, err := os.ReadFile(c.InboundConfigPath)
+		if err != nil {
 			log.WithField("err", err).Panic("Failed to read Custom Inbound config file")
 		} else {
-			if err = json.NewDecoder(f).Decode(&coreCustomInboundConfig); err != nil {
+			if err = json.Unmarshal(data, &coreCustomInboundConfig); err != nil {
 				log.WithField("err", err).Panic("Failed to unmarshal Custom Inbound config")
 			}
 		}
@@ -106,17 +151,18 @@ func getCore(c *conf.XrayConfig) *core.Instance {
 	for _, config := range coreCustomInboundConfig {
 		oc, err := config.Build()
 		if err != nil {
-			log.WithField("err", err).Panic("Failed to understand Inbound config, Please check: https://xtls.github.io/config/inbound.html for help")
+			log.WithField("err", err).Panic("Failed to understand Inbound config. Please check: https://xtls.github.io/config/inbound.html for help")
 		}
 		inBoundConfig = append(inBoundConfig, oc)
 	}
 	// Custom Outbound config
 	var coreCustomOutboundConfig []coreConf.OutboundDetourConfig
 	if c.OutboundConfigPath != "" {
-		if f, err := os.Open(c.OutboundConfigPath); err != nil {
+		data, err := os.ReadFile(c.OutboundConfigPath)
+		if err != nil {
 			log.WithField("err", err).Panic("Failed to read Custom Outbound config file")
 		} else {
-			if err = json.NewDecoder(f).Decode(&coreCustomOutboundConfig); err != nil {
+			if err = json.Unmarshal(data, &coreCustomOutboundConfig); err != nil {
 				log.WithField("err", err).Panic("Failed to unmarshal Custom Outbound config")
 			}
 		}
@@ -134,7 +180,7 @@ func getCore(c *conf.XrayConfig) *core.Instance {
 	corePolicyConfig := &coreConf.PolicyConfig{}
 	corePolicyConfig.Levels = map[uint32]*coreConf.Policy{0: levelPolicyConfig}
 	policyConfig, _ := corePolicyConfig.Build()
-	// Build Core conf
+	// Build Xray conf
 	config := &core.Config{
 		App: []*serial.TypedMessage{
 			serial.ToTypedMessage(coreLogConfig.Build()),
@@ -157,14 +203,13 @@ func getCore(c *conf.XrayConfig) *core.Instance {
 	return server
 }
 
-// Start the Core
-func (c *Core) Start() error {
+// Start the Xray
+func (c *Xray) Start() error {
 	c.access.Lock()
 	defer c.access.Unlock()
 	if err := c.Server.Start(); err != nil {
 		return err
 	}
-	c.shm = c.Server.GetFeature(statsFeature.ManagerType()).(statsFeature.Manager)
 	c.ihm = c.Server.GetFeature(inbound.ManagerType()).(inbound.Manager)
 	c.ohm = c.Server.GetFeature(outbound.ManagerType()).(outbound.Manager)
 	c.dispatcher = c.Server.GetFeature(routing.DispatcherType()).(*dispatcher.DefaultDispatcher)
@@ -172,12 +217,11 @@ func (c *Core) Start() error {
 }
 
 // Close  the core
-func (c *Core) Close() error {
+func (c *Xray) Close() error {
 	c.access.Lock()
 	defer c.access.Unlock()
 	c.ihm = nil
 	c.ohm = nil
-	c.shm = nil
 	c.dispatcher = nil
 	err := c.Server.Close()
 	if err != nil {
@@ -186,15 +230,16 @@ func (c *Core) Close() error {
 	return nil
 }
 
-func (c *Core) Protocols() []string {
+func (c *Xray) Protocols() []string {
 	return []string{
 		"vmess",
 		"vless",
 		"shadowsocks",
 		"trojan",
+		"hysteria2",
 	}
 }
 
-func (c *Core) Type() string {
+func (c *Xray) Type() string {
 	return "xray"
 }

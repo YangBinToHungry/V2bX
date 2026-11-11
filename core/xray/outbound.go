@@ -3,9 +3,9 @@ package xray
 import (
 	"fmt"
 
-	conf2 "github.com/InazumaV/V2bX/conf"
-	"github.com/goccy/go-json"
-	"github.com/xtls/xray-core/common/net"
+	"encoding/json"
+
+	conf2 "github.com/Sakawat-hossain/V2bX/conf"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/infra/conf"
 )
@@ -18,8 +18,7 @@ func buildOutbound(config *conf2.Options, tag string) (*core.OutboundHandlerConf
 
 	// Build Send IP address
 	if config.SendIP != "" {
-		ipAddress := net.ParseAddress(config.SendIP)
-		outboundDetourConfig.SendThrough = &conf.Address{Address: ipAddress}
+		outboundDetourConfig.SendThrough = &config.SendIP
 	}
 
 	// Freedom Protocol setting
@@ -40,5 +39,18 @@ func buildOutbound(config *conf2.Options, tag string) (*core.OutboundHandlerConf
 		return nil, fmt.Errorf("marshal proxy config error: %s", err)
 	}
 	outboundDetourConfig.Settings = &setting
+	return outboundDetourConfig.Build()
+}
+
+// buildCustomOutbound builds an outbound from raw JSON config provided by the panel's
+// default_out route action_value. The tag is overridden to match the node tag so that
+// traffic for this node is routed through the custom outbound.
+func buildCustomOutbound(rawJSON string, tag string) (*core.OutboundHandlerConfig, error) {
+	outboundDetourConfig := &conf.OutboundDetourConfig{}
+	if err := json.Unmarshal([]byte(rawJSON), outboundDetourConfig); err != nil {
+		return nil, fmt.Errorf("unmarshal custom outbound config error: %s", err)
+	}
+	// Override tag to match the node tag
+	outboundDetourConfig.Tag = tag
 	return outboundDetourConfig.Build()
 }

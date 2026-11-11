@@ -6,9 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/InazumaV/V2bX/api/panel"
-	"github.com/InazumaV/V2bX/conf"
-	"github.com/hashicorp/go-multierror"
+	"github.com/Sakawat-hossain/V2bX/api/panel"
+	"github.com/Sakawat-hossain/V2bX/conf"
 )
 
 type Selector struct {
@@ -49,11 +48,13 @@ func (s *Selector) Start() error {
 }
 
 func (s *Selector) Close() error {
-	var errs error
+	var errs []error
 	for i := range s.cores {
-		errs = multierror.Append(errs, s.cores[i].Close())
+		if err := s.cores[i].Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return errs
+	return errors.Join(errs...)
 }
 
 func isSupported(protocol string, protocols []string) bool {
@@ -106,7 +107,7 @@ func (s *Selector) AddNode(tag string, info *panel.NodeInfo, option *conf.Option
 
 func (s *Selector) DelNode(tag string) error {
 	if t, e := s.nodes.Load(tag); e {
-		err := s.cores[t.(string)].DelNode(tag)
+		err := t.(Core).DelNode(tag)
 		if err != nil {
 			return err
 		}
@@ -124,20 +125,57 @@ func (s *Selector) AddUsers(p *AddUsersParams) (added int, err error) {
 	return t.(Core).AddUsers(p)
 }
 
-func (s *Selector) GetUserTraffic(tag, uuid string, reset bool) (up int64, down int64) {
+func (s *Selector) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic, error) {
 	t, e := s.nodes.Load(tag)
 	if !e {
-		return 0, 0
+		return nil, errors.New("the node is not have")
 	}
-	return t.(Core).GetUserTraffic(tag, uuid, reset)
+	return t.(Core).GetUserTrafficSlice(tag, reset)
 }
 
-func (s *Selector) DelUsers(users []panel.UserInfo, tag string) error {
+func (s *Selector) ReturnUserTraffic(tag string, traffic []panel.UserTraffic) error {
 	t, e := s.nodes.Load(tag)
 	if !e {
 		return errors.New("the node is not have")
 	}
-	return t.(Core).DelUsers(users, tag)
+	return t.(Core).ReturnUserTraffic(tag, traffic)
+}
+
+func (s *Selector) DelUsers(users []panel.UserInfo, tag string, info *panel.NodeInfo) error {
+	t, e := s.nodes.Load(tag)
+	if !e {
+		return errors.New("the node is not have")
+	}
+	return t.(Core).DelUsers(users, tag, info)
+}
+
+func (s *Selector) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, config *conf.Options) {
+	t, e := s.nodes.Load(tag)
+	if !e {
+		return
+	}
+	t.(Core).UpdateNodeReportMinTraffic(tag, info, config)
+}
+
+func (s *Selector) UpdateDNS(tag string, info *panel.NodeInfo) error {
+	t, e := s.nodes.Load(tag)
+	if !e {
+		return errors.New("the node is not have")
+	}
+	return t.(Core).UpdateDNS(tag, info)
+}
+
+func (s *Selector) AddNodeCustomOutbounds(info *panel.NodeInfo, opts *conf.Options) error {
+	var errs []error
+	for _, core := range s.cores {
+		if err := core.AddNodeCustomOutbounds(info, opts); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 func (s *Selector) Protocols() []string {

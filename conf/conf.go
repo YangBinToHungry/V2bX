@@ -2,16 +2,23 @@ package conf
 
 import (
 	"fmt"
-	"github.com/InazumaV/V2bX/common/json5"
+	"io"
 	"os"
+	"sync"
 
-	"github.com/goccy/go-json"
+	"github.com/Sakawat-hossain/V2bX/common/json5"
+
+	"encoding/json/v2"
 )
 
 type Conf struct {
 	LogConfig   LogConfig    `json:"Log"`
 	CoresConfig []CoreConfig `json:"Cores"`
 	NodeConfig  []NodeConfig `json:"Nodes"`
+
+	mu          sync.RWMutex  `json:"-"`
+	watcherMu   sync.Mutex    `json:"-"`
+	watcherDone chan struct{} `json:"-"`
 }
 
 func New() *Conf {
@@ -29,5 +36,17 @@ func (p *Conf) LoadFromPath(filePath string) error {
 		return fmt.Errorf("open config file error: %s", err)
 	}
 	defer f.Close()
-	return json.NewDecoder(json5.NewTrimNodeReader(f)).Decode(p)
+
+	reader := json5.NewTrimNodeReader(f)
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return fmt.Errorf("read config file error: %s", err)
+	}
+
+	err = json.Unmarshal(data, p)
+	if err != nil {
+		return fmt.Errorf("unmarshal config error: %s", err)
+	}
+
+	return nil
 }

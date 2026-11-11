@@ -10,7 +10,10 @@ func TestConf_LoadFromPath(t *testing.T) {
 }
 
 func TestConf_Watch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("manual watcher test: blocks forever (select{}) to observe live reloads")
+	}
 	c := New()
-	t.Log(c.Watch("./1.json", "", func() {}))
+	t.Log(c.Watch("./1.json", "", "", func() {}))
 	select {}
 }

@@ -13,14 +13,15 @@ import (
 	"strings"
 	"time"
 
+	"encoding/json"
+
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/challenge/http01"
 	"github.com/go-acme/lego/v4/providers/dns"
 	"github.com/go-acme/lego/v4/registration"
-	"github.com/goccy/go-json"
 
-	"github.com/InazumaV/V2bX/common/file"
-	"github.com/InazumaV/V2bX/conf"
+	"github.com/Sakawat-hossain/V2bX/common/file"
+	"github.com/Sakawat-hossain/V2bX/conf"
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/lego"
 )
@@ -99,6 +100,9 @@ func (l *Lego) CreateCert() (err error) {
 		return fmt.Errorf("obtain certificate error: %s", err)
 	}
 	err = l.writeCert(certificates)
+	if err != nil {
+		return fmt.Errorf("write certificate error: %s", err)
+	}
 	return nil
 }
 
@@ -120,6 +124,9 @@ func (l *Lego) RenewCert() error {
 		return err
 	}
 	err = l.writeCert(res)
+	if err != nil {
+		return fmt.Errorf("write certificate error: %s", err)
+	}
 	return nil
 }
 
@@ -152,8 +159,14 @@ func (l *Lego) writeCert(certificates *certificate.Resource) error {
 	if err != nil {
 		return fmt.Errorf("check path error: %s", err)
 	}
-	err = os.WriteFile(l.parseParams(l.config.KeyFile), certificates.PrivateKey, 0644)
+	// Private key: 0600 to prevent local-user disclosure (W1.1 / audit #6).
+	// Matches the convention used by self-signed key generation in cert.go.
+	err = os.WriteFile(l.parseParams(l.config.KeyFile), certificates.PrivateKey, 0600)
 	if err != nil {
+		return err
+	}
+	// Defensive chmod in case umask widened the WriteFile mode bits.
+	if err = os.Chmod(l.parseParams(l.config.KeyFile), 0600); err != nil {
 		return err
 	}
 	return nil
@@ -238,10 +251,11 @@ func (u *User) Save(path string) error {
 		return fmt.Errorf("check path error: %s", err)
 	}
 	u.KeyEncoded, _ = EncodePrivate(u.key.(*ecdsa.PrivateKey))
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
+	defer f.Close()
 	err = json.NewEncoder(f).Encode(u)
 	if err != nil {
 		return fmt.Errorf("marshal json error: %s", err)
@@ -256,12 +270,14 @@ func (u *User) DecodePrivate(pemEncodedPriv string) (*ecdsa.PrivateKey, error) {
 	privateKey, err := x509.ParseECPrivateKey(x509EncodedPriv)
 	return privateKey, err
 }
+
 func (u *User) Load(path string) error {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("open file error: %s", err)
 	}
-	err = json.NewDecoder(f).Decode(u)
+
+	err = json.Unmarshal(data, u)
 	if err != nil {
 		return fmt.Errorf("unmarshal json error: %s", err)
 	}

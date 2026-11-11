@@ -1,88 +1,174 @@
+<div align="center">
+
+<img src="logo.png" alt="V2bX" width="100%">
+
+<br>
+
+### Multi-Core Multi-Protocol Node Backend Powered by Xray-core · Sing-box
+
+**Built for XBoard / V2Board — Native Reality, XTLS-Vision & Modern Transport Support**
+
+<br>
+
+[![Release](https://img.shields.io/github/v/release/Sakawat-hossain/V2bX?style=for-the-badge&label=RELEASE&labelColor=0B0E14&color=7C3AED)](https://github.com/Sakawat-hossain/V2bX/releases)
+[![Go](https://img.shields.io/badge/GO-1.26-0AB2F9?style=for-the-badge&labelColor=0B0E14&logo=go&logoColor=white)](go.mod)
+[![License](https://img.shields.io/badge/LICENSE-MPL--2.0-A16FEE?style=for-the-badge&labelColor=0B0E14)](LICENSE)
+
+<br>
+
+📖 Primary documentation: **[简体中文（主文档）](README.zh-CN.md)** · **English** (this page)
+
+</div>
+
+
 # V2bX
 
-[![](https://img.shields.io/badge/TgChat-%E4%BA%A4%E6%B5%81%E7%BE%A4-blue)](https://t.me/YuzukiProjects)
+**V2bX** is a high-performance, multi-protocol VPN node backend designed for **XBoard**, **V2Board**, and other **UniProxy-compatible panels**.
 
-A V2board node server based on multi core, modified from XrayR.  
-一个基于多种内核的V2board节点服务端，修改自XrayR，支持V2ay,Trojan,Shadowsocks协议。
+Powered by **Xray-core**, **sing-box**, and **Hysteria2** engines, V2bX provides a modern, scalable node architecture with support for advanced proxy technologies including **Reality**, **XTLS-Vision**, **Hysteria2**, and high-performance UDP transport.
 
-**注意： 本项目需要V2board版本 >= 1.7.0**
+Built for next-generation VPN infrastructure with:
 
-**由于本人身体欠佳，导致此项目搁置已久，且由于多内核的原因导致项目臃肿以及各种依赖问题层出不穷，并且已有仍在持续维护的分支项目存在，因此本项目将不再进行维护。**  
-作为V2bX的继任者的[Ratte](https://github.com/InazumaV/Ratte)仍在构思及逐步实现中，该项目尝试通过基于RPC的插件化去解决项目臃肿以及依赖问题，但由于本人身体原因，进展缓慢。
+- Multi-core processing
+- Advanced transport protocols
+- Anti-censorship technologies
+- High-speed UDP acceleration
+- Enterprise-level node management
 
-## 特点
+---
 
-* 永久开源且免费。
-* 支持Vmess/Vless, Trojan， Shadowsocks, Hysteria多种协议。
-* 支持Vless和XTLS等新特性。
-* 支持单实例对接多节点，无需重复启动。
-* 支持限制在线IP。
-* 支持限制Tcp连接数。
-* 支持节点端口级别、用户级别限速。
-* 配置简单明了。
-* 修改配置自动重启实例。
-* 支持多种内核，易扩展。
-* 支持条件编译，可仅编译需要的内核。
+## 🚀 Protocol Feature Support
 
-## 功能介绍
+V2bX provides unified management and advanced control features across all supported protocols.
 
-| 功能        | v2ray | trojan | shadowsocks | hysteria |
-|-----------|-------|--------|-------------|----------|
-| 自动申请tls证书 | √     | √      | √           | √        |
-| 自动续签tls证书 | √     | √      | √           | √        |
-| 在线人数统计    | √     | √      | √           | √        |
-| 审计规则      | √     | √      | √           | √         |
-| 自定义DNS    | √     | √      | √           | √        |
-| 在线IP数限制   | √     | √      | √           | √        |
-| 连接数限制     | √     | √      | √           | √         |
-| 跨节点IP数限制  |      |       |            |          |
-| 按照用户限速    | √     | √      | √           | √         |
-| 动态限速(未测试) | √     | √      | √           | √         |
+| Feature | VLESS | VMess | Trojan | Shadowsocks | Hysteria | Hysteria2 | TUIC | SOCKS | HTTP | NaiveProxy | Mieru | AnyTLS |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Automatic TLS Certificate Management | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Online User Statistics | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Routing Rules | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Custom DNS Support | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| IP Limit | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Connection Limit | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Cross-Node IP Limit | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| User-Level Speed Limit | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| UDP Relay Support | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
+| Multi-Core Engine Support | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-## TODO
+---
 
-- [ ] 重新实现动态限速
-- [ ] 重新实现在线IP同步（跨节点在线IP限制）
-- [ ] 完善使用文档
+# ✨ Features
 
-## 软件安装
+| Feature | Description |
+|---|---|
+| ⚡ **Multi-Core Architecture** | Supports **Xray-core**, **sing-box**, and **Hysteria2** engines |
+| 🔐 **Reality Support** | Native VLESS Reality with **XTLS-Vision support** |
+| 🌐 **Multi Protocol Engine** | Run different protocols using the best backend engine |
+| 🛰️ **Panel Integration** | Full XBoard / V2Board UniProxy API support |
+| 👥 **User Management** | Automatic user synchronization from panel |
+| 📊 **Traffic Reporting** | Real-time traffic and online device reporting |
+| 🚀 **UDP Acceleration** | High-performance UDP relay support |
+| 🧩 **Multi Architecture** | amd64 / arm64 / armv7 / armv6 / armv5 / s390x / riscv64 |
+| 🔒 **Certificate Support** | none / self / http / dns / reality |
+| ⚙️ **Production Ready** | Designed for large-scale VPN deployment |
 
-### 一键安装
+---
 
+# 🛰️ Panel Compatibility
+
+Compatible with:
+
+- **XBoard**
+- **V2Board**
+- **UniProxy compatible panels**
+
+Supported functions:
+
+✅ Node configuration sync  
+✅ User synchronization  
+✅ Traffic statistics  
+✅ Online device reporting  
+✅ Automatic configuration updates  
+
+## 🚀 Install
+
+One-line script Supports for Ubuntu, Debian, CentOS, Alpine, and Arch; supports amd64, arm64, armv7, armv6, armv5, s390x, and riscv64 
+
+```bash
+wget -N https://raw.githubusercontent.com/Sakawat-hossain/V2bX/main/V2bX-script-master/install.sh && bash install.sh
 ```
-wget -N https://raw.githubusercontents.com/InazumaV/V2bX-script/master/install.sh && bash install.sh
+
+After install, run `V2bX` for the management menu, or use the commands below. You can also build from source (see the bottom of this page).
+
+## ⚙️ Configuration
+
+The default config file is `/etc/V2bX/config.json`; see [`example/config.json`](example/config.json) for a full example. The shape (keys are case-sensitive):
+
+```jsonc
+{
+  "Log": { "Level": "info", "Output": "" },
+  "Cores": [
+    {
+      "Type": "sing",
+      "Log": { "Level": "info", "Timestamp": true },
+      "OriginalPath": "/etc/V2bX/sing_origin.json"
+    }
+  ],
+  "Nodes": [
+    {
+      "Core": "sing",
+      "ApiHost": "https://panel.example.com",
+      "ApiKey": "panel node communication key / token",
+      "NodeID": 1,
+      "NodeType": "vless",
+      "ListenIP": "0.0.0.0",
+      "EnableSniff": true,
+      "CertConfig": { "CertMode": "none" }
+    }
+  ]
+}
 ```
 
-### 手动安装
+- **`Cores`** — the cores you enable (`sing` / `xray` / `hysteria2`); each node picks one via its `Core` field.
+- **`NodeType`** — `shadowsocks` / `vless` / `vmess` / `trojan` / `hysteria2` / `socks`, matching the panel.
+- **`CertConfig.CertMode`** — `none` / `self` / `http` / `dns` / `reality`.
+- **VLESS-Reality / XTLS-Vision** — configured on the node in the panel (dest, keys, short ID, flow) and handled by the core; the agent reads it from the panel config, so you don't hand-write keys.
 
-[手动安装教程（过时待更新）](https://yuzuki-1.gitbook.io/v2bx-doc/xrayr-xia-zai-he-an-zhuang/install/manual)
+## 🛠️ Management Commands
 
-## 构建
-``` bash
-# 通过-tags选项指定要编译的内核， 可选 xray， sing
-go build -o V2bX -ldflags '-s -w' -gcflags="all=-trimpath=${PWD}" -asmflags="all=-trimpath=${PWD} -tags "xray sing"
+Once installed, use `v2bx` or `V2bX` from your terminal to manage the node service.
+
+| Command | Description |
+|---|---|
+| `v2bx` | Open interactive management menu |
+| `v2bx start` | Start V2bX service |
+| `v2bx stop` | Stop V2bX service |
+| `v2bx restart` | Restart V2bX service |
+| `v2bx status` | Check service status |
+| `v2bx log` | View live logs |
+| `v2bx update` | Update to latest version |
+| `v2bx update <version>` | Update to a specific version |
+| `v2bx generate` | Generate configuration interactively |
+| `v2bx x25519` | Generate X25519 key pair for Reality |
+| `v2bx enable` | Enable startup on boot |
+| `v2bx disable` | Disable startup on boot |
+| `v2bx uninstall` | Remove V2bX completely |
+| `v2bx version` | Display installed version |
+
+## 🧱 Build from source
+
+```bash
+# needs Go 1.26+; build tags and GOEXPERIMENT must match the Dockerfile
+GOEXPERIMENT=jsonv2 go build -trimpath \
+  -tags "sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor" \
+  -o V2bX .
 ```
 
-## 配置文件及详细使用教程
+At runtime it needs the geo data files (`geoip.dat` / `geosite.dat`, and optionally `geoip.db` / `geosite.db`) — fetched by the install script or at deploy time, not shipped in the repo.
 
-[详细使用教程](https://yuzuki-1.gitbook.io/v2bx-doc/)
+## 👤 Maintainer
 
-## 免责声明
+**Sakawat Hossain**
 
-* 此项目用于本人自用，因此本人不能保证向后兼容性。
-* 由于本人能力有限，不能保证所有功能的可用性，如果出现问题请在Issues反馈。
-* 本人不对任何人使用本项目造成的任何后果承担责任。
-* 本人比较多变，因此本项目可能会随想法或思路的变动随性更改项目结构或大规模重构代码，若不能接受请勿使用。
+## 📄 License
 
-## Thanks
-
-* [Project X](https://github.com/XTLS/)
-* [V2Fly](https://github.com/v2fly)
-* [VNet-V2ray](https://github.com/ProxyPanel/VNet-V2ray)
-* [Air-Universe](https://github.com/crossfw/Air-Universe)
-* [XrayR](https://github.com/XrayR/XrayR)
-* [sing-box](https://github.com/SagerNet/sing-box)
-
-## Stars 增长记录
-
-[![Stargazers over time](https://starchart.cc/InazumaV/V2bX.svg)](https://starchart.cc/InazumaV/V2bX)
+Licensed under the [Mozilla Public License 2.0](LICENSE).
