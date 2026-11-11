@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -30,6 +31,8 @@ type Client struct {
 	responseBodyHash string
 	UserList         *UserListBody
 	AliveMap         *AliveMap
+
+	trafficReceiptWarning sync.Once
 }
 
 func New(c *conf.ApiConfig) (*Client, error) {

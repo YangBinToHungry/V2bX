@@ -72,8 +72,8 @@ type DynamicBucket struct {
 // newBucket builds a token bucket with a quantum aligned to bucketQuantum,
 // capacity = rate (1s burst), and refill of rate * quantum / 1s rounded up.
 func newBucket(rate int64) *ratelimit.Bucket {
-	if rate < 1 {
-		rate = 1
+	if rate <= 0 {
+		return nil // unlimited, while preserving a shared hot-swappable handle
 	}
 	fill := rate / int64(time.Second/bucketQuantum) // tokens per quantum
 	if fill < 1 {

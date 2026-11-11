@@ -45,6 +45,9 @@ func (c *Conf) Validate() []string {
 			if dsc.Periodic <= 0 {
 				warnings = append(warnings, prefix+": DynamicSpeedLimit Periodic must be positive")
 			}
+			if dsc.SpeedLimit <= 0 || dsc.ExpireTime <= 0 {
+				warnings = append(warnings, prefix+": DynamicSpeedLimit SpeedLimit and ExpireTime must be positive")
+			}
 			if dsc.Traffic <= 0 {
 				warnings = append(warnings, prefix+": DynamicSpeedLimit Traffic threshold must be positive")
 			}

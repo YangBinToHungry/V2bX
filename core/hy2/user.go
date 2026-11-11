@@ -1,6 +1,7 @@
 package hy2
 
 import (
+	"fmt"
 	"net"
 	"sync"
 
@@ -28,7 +29,7 @@ func (v *V2bX) Authenticate(addr net.Addr, auth string, tx uint64) (ok bool, id 
 
 // ReturnUserTraffic backfills traffic counters after a failed panel push.
 // W3.1 / audit #13: mirror of Xray.ReturnUserTraffic; see that for rationale.
-// hy2 keys per-user counters by UUID (h.Auth.usersMap is uuid -> uid).
+// hy2 keys per-user counters by UUID (node.Auth.usersMap is uuid -> uid).
 func (h *Hysteria2) ReturnUserTraffic(tag string, traffic []panel.UserTraffic) error {
 	if len(traffic) == 0 {
 		return nil
@@ -53,12 +54,12 @@ func (h *Hysteria2) ReturnUserTraffic(tag string, traffic []panel.UserTraffic) e
 	for _, t := range traffic {
 		delta[t.UID] = [2]int64{t.Upload, t.Download}
 	}
-	h.Auth.mutex.RLock()
-	uidToUUID := make(map[int]string, len(h.Auth.usersMap))
-	for uuid, uid := range h.Auth.usersMap {
+	node.Auth.mutex.RLock()
+	uidToUUID := make(map[int]string, len(node.Auth.usersMap))
+	for uuid, uid := range node.Auth.usersMap {
 		uidToUUID[uid] = uuid
 	}
-	h.Auth.mutex.RUnlock()
+	node.Auth.mutex.RUnlock()
 	for uid, ud := range delta {
 		uuid, ok := uidToUUID[uid]
 		if !ok {
@@ -75,11 +76,18 @@ func (h *Hysteria2) ReturnUserTraffic(tag string, traffic []panel.UserTraffic) e
 }
 
 func (h *Hysteria2) AddUsers(p *vCore.AddUsersParams) (added int, err error) {
-	h.Auth.mutex.Lock()
-	for _, user := range p.Users {
-		h.Auth.usersMap[user.Uuid] = user.Id
+	h.nodesMu.RLock()
+	node, ok := h.Hy2nodes[p.Tag]
+	h.nodesMu.RUnlock()
+	if !ok {
+		return 0, fmt.Errorf("unknown hysteria2 node %q", p.Tag)
 	}
-	h.Auth.mutex.Unlock()
+
+	node.Auth.mutex.Lock()
+	for _, user := range p.Users {
+		node.Auth.usersMap[user.Uuid] = user.Id
+	}
+	node.Auth.mutex.Unlock()
 	return len(p.Users), nil
 }
 
@@ -88,6 +96,9 @@ func (h *Hysteria2) DelUsers(users []panel.UserInfo, tag string, _ *panel.NodeIn
 	h.nodesMu.RLock()
 	node, ok := h.Hy2nodes[tag]
 	h.nodesMu.RUnlock()
+	if !ok {
+		return nil
+	}
 	if ok {
 		if hook, ok := node.TrafficLogger.(*HookServer); ok {
 			if v, ok := hook.Counter.Load(tag); ok {
@@ -98,18 +109,16 @@ func (h *Hysteria2) DelUsers(users []panel.UserInfo, tag string, _ *panel.NodeIn
 			}
 		}
 	}
-	h.Auth.mutex.Lock()
+	node.Auth.mutex.Lock()
 	for _, user := range users {
-		delete(h.Auth.usersMap, user.Uuid)
+		delete(node.Auth.usersMap, user.Uuid)
 	}
-	h.Auth.mutex.Unlock()
+	node.Auth.mutex.Unlock()
 	return nil
 }
 
 func (h *Hysteria2) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic, error) {
 	trafficSlice := make([]panel.UserTraffic, 0)
-	h.Auth.mutex.RLock()
-	defer h.Auth.mutex.RUnlock()
 	// W2.1: snapshot the node under nodesMu read lock instead of indexing twice.
 	h.nodesMu.RLock()
 	node, ok := h.Hy2nodes[tag]
@@ -117,6 +126,8 @@ func (h *Hysteria2) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTra
 	if !ok {
 		return nil, nil
 	}
+	node.Auth.mutex.RLock()
+	defer node.Auth.mutex.RUnlock()
 	hook := node.TrafficLogger.(*HookServer)
 	if v, ok := hook.Counter.Load(tag); ok {
 		c := v.(*counter.TrafficCounter)
@@ -132,18 +143,18 @@ func (h *Hysteria2) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTra
 				down = traffic.DownCounter.Load()
 			}
 			if up+down > hook.ReportMinTrafficBytes.Load() {
-				if h.Auth.usersMap[uuid] == 0 {
+				if node.Auth.usersMap[uuid] == 0 {
 					c.Delete(uuid)
 					return true
 				}
 				trafficSlice = append(trafficSlice, panel.UserTraffic{
-					UID:      h.Auth.usersMap[uuid],
+					UID:      node.Auth.usersMap[uuid],
 					Upload:   up,
 					Download: down,
 				})
 			} else if reset && (up > 0 || down > 0) {
 				// Deleted user below threshold: clean up instead of accumulating forever
-				if h.Auth.usersMap[uuid] == 0 {
+				if node.Auth.usersMap[uuid] == 0 {
 					c.Delete(uuid)
 					return true
 				}
@@ -151,7 +162,7 @@ func (h *Hysteria2) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTra
 				traffic.UpCounter.Add(up)
 				traffic.DownCounter.Add(down)
 				c.MarkDirty(uuid)
-			} else if h.Auth.usersMap[uuid] == 0 {
+			} else if node.Auth.usersMap[uuid] == 0 {
 				// Deleted user with zero traffic: clean up the idle entry
 				c.Delete(uuid)
 			}
@@ -159,9 +170,9 @@ func (h *Hysteria2) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTra
 		}
 		c.IterateDirty(reset, walk)
 		// W6 review #5: occasional orphan sweep (see xray equivalent).
-		// h.Auth.mutex is already held (RLock) for this whole function.
+		// node.Auth.mutex is already held (RLock) for this whole function.
 		if reset {
-			c.MaybePruneIdle(func(uuid string) bool { return h.Auth.usersMap[uuid] != 0 })
+			c.MaybePruneIdle(func(uuid string) bool { return node.Auth.usersMap[uuid] != 0 })
 		}
 		if len(trafficSlice) == 0 {
 			return nil, nil

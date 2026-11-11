@@ -107,6 +107,9 @@ func (c *Client) GetUserListCtx(ctx context.Context) ([]UserInfo, error) {
 	return userlist.Users, nil
 }
 
+// InvalidateUserList forces a full snapshot after a downstream apply failure.
+func (c *Client) InvalidateUserList() { c.userEtag = "" }
+
 // GetUserAlive will fetch the alive_ip count for users.
 // Note: Xboard does not provide the /alivelist endpoint, so this will
 // gracefully return an empty map. The device_limit feature requires
@@ -168,19 +171,38 @@ func (c *Client) ReportUserTraffic(userTraffic []UserTraffic) error {
 
 // ReportUserTrafficCtx is the ctx-aware variant. W3.2 / W3.4.
 func (c *Client) ReportUserTrafficCtx(ctx context.Context, userTraffic []UserTraffic) error {
+	return c.ReportTrafficBatchCtx(ctx, "", userTraffic)
+}
+
+// ReportTrafficBatchCtx retries an immutable batch using a stable idempotency key.
+func (c *Client) ReportTrafficBatchCtx(ctx context.Context, batchID string, userTraffic []UserTraffic) error {
 	data := make(map[int][]int64, len(userTraffic))
 	for i := range userTraffic {
 		data[userTraffic[i].UID] = []int64{userTraffic[i].Upload, userTraffic[i].Download}
 	}
 	const path = "/api/v1/server/UniProxy/push"
-	r, err := c.client.R().
-		SetContext(ctx).
+	request := c.client.R().SetContext(ctx)
+	if batchID != "" {
+		request.SetHeader("X-Traffic-Report-ID", batchID)
+	}
+	r, err := request.
 		SetBody(data).
 		ForceContentType("application/json").
 		Post(path)
 	err = c.checkResponse(r, path, err)
 	if err != nil {
 		return err
+	}
+	if batchID != "" {
+		ack := r.Header().Get("X-Traffic-Report-Ack")
+		if ack != "" && ack != batchID {
+			return fmt.Errorf("panel acknowledged a different traffic report")
+		}
+		if ack == "" {
+			c.trafficReceiptWarning.Do(func() {
+				logrus.Warn("Panel does not acknowledge traffic batch ids; upgrade Xboard to enable retry deduplication")
+			})
+		}
 	}
 	return nil
 }

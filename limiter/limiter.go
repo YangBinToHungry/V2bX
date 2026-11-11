@@ -22,16 +22,17 @@ func Init() {
 }
 
 type Limiter struct {
-	NodeType        string
-	RuleMu          sync.RWMutex // Protects rule slices from data race on hot-reloads
-	DomainRules     []*regexp.Regexp
-	ProtocolRules   []string
-	IPRules         []*net.IPNet      // block_ip: CIDR networks to block
-	PortRules       []PortRange       // block_port: port ranges to block
-	RouteRules      []panel.RouteRule // route/route_ip/direct/proxy rules (source data)
-	RouteMatcher    *xrayRouteMatcher // Xray-native route matcher (geosite/geoip/domain/ip)
-	DefaultOutbound string            // default_out: custom default outbound tag
-	SpeedLimit      int
+	NodeType                 string
+	RuleMu                   sync.RWMutex // Protects rule slices from data race on hot-reloads
+	DomainRules              []*regexp.Regexp
+	ProtocolRules            []string
+	IPRules                  []*net.IPNet      // block_ip: CIDR networks to block
+	PortRules                []PortRange       // block_port: port ranges to block
+	RouteRules               []panel.RouteRule // route/route_ip/direct/proxy rules (source data)
+	RouteMatcher             *xrayRouteMatcher // Xray-native route matcher (geosite/geoip/domain/ip)
+	DefaultOutbound          string            // default_out: custom default outbound tag
+	SpeedLimit               int
+	DynamicSpeedLimitEnabled bool
 
 	// User online IP tracking: sync.Map for high concurrency lock-free scale
 	UserOnlineIP *sync.Map // Key: TagUUID, value: *sync.Map {Key: Ip, value: Uid}
@@ -53,6 +54,7 @@ type Limiter struct {
 //
 // UID is set once at construction and not mutated, so it stays a plain int.
 type UserLimitInfo struct {
+	dynamicMu         sync.Mutex
 	UID               int
 	SpeedLimit        atomic.Int64
 	DeviceLimit       atomic.Int64
@@ -105,12 +107,13 @@ func (u *UserLimitInfo) StoreCheckResult(now time.Time, rejected bool) {
 
 func AddLimiter(nodeType string, tag string, l *conf.LimitConfig, users []panel.UserInfo, aliveList map[int]int) *Limiter {
 	info := &Limiter{
-		NodeType:      nodeType,
-		SpeedLimit:    l.SpeedLimit,
-		UserOnlineIP:  new(sync.Map),
-		OldUserOnline: new(sync.Map),
-		UserLimitInfo: new(sync.Map),
-		SpeedLimiter:  new(sync.Map),
+		NodeType:                 nodeType,
+		DynamicSpeedLimitEnabled: l.EnableDynamicSpeedLimit,
+		SpeedLimit:               l.SpeedLimit,
+		UserOnlineIP:             new(sync.Map),
+		OldUserOnline:            new(sync.Map),
+		UserLimitInfo:            new(sync.Map),
+		SpeedLimiter:             new(sync.Map),
 	}
 	info.AliveList.Store(&aliveList)
 	for i := range users {
@@ -169,7 +172,14 @@ func (l *Limiter) UpdateUser(tag string, added []panel.UserInfo, deleted []panel
 			u.DeviceLimit.Store(int64(modified[i].DeviceLimit))
 		}
 		// Hot-swap the rate limit bucket for existing connections
-		limit := int64(determineSpeedLimit(l.SpeedLimit, modified[i].SpeedLimit)) * 1000000 / 8
+		dynamic := 0
+		if v, ok := l.UserLimitInfo.Load(taguuid); ok {
+			info := v.(*UserLimitInfo)
+			if info.ExpireTime.Load() > time.Now().Unix() {
+				dynamic = int(info.DynamicSpeedLimit.Load())
+			}
+		}
+		limit := int64(determineSpeedLimit(l.SpeedLimit, determineSpeedLimit(modified[i].SpeedLimit, dynamic))) * 1000000 / 8
 		if limit > 0 {
 			if v, ok := l.SpeedLimiter.Load(taguuid); ok {
 				v.(*rate.DynamicBucket).Update(limit)
@@ -177,8 +187,8 @@ func (l *Limiter) UpdateUser(tag string, added []panel.UserInfo, deleted []panel
 				db := rate.NewDynamicBucket(limit)
 				l.SpeedLimiter.Store(taguuid, db)
 			}
-		} else {
-			l.SpeedLimiter.Delete(taguuid)
+		} else if v, ok := l.SpeedLimiter.Load(taguuid); ok {
+			v.(*rate.DynamicBucket).Update(0)
 		}
 	}
 	for i := range added {
@@ -195,6 +205,8 @@ func (l *Limiter) UpdateUser(tag string, added []panel.UserInfo, deleted []panel
 func (l *Limiter) UpdateDynamicSpeedLimit(tag, uuid string, limit int, expire time.Time) error {
 	if v, ok := l.UserLimitInfo.Load(format.UserTag(tag, uuid)); ok {
 		info := v.(*UserLimitInfo)
+		info.dynamicMu.Lock()
+		defer info.dynamicMu.Unlock()
 		// W2.6: atomic stores so concurrent CheckLimit readers see a coherent
 		// (DynamicSpeedLimit, ExpireTime) update — not a torn pair.
 		info.DynamicSpeedLimit.Store(int64(limit))
@@ -203,16 +215,44 @@ func (l *Limiter) UpdateDynamicSpeedLimit(tag, uuid string, limit int, expire ti
 		// Hot-swap the rate limit bucket atomically — existing connections
 		// see the update immediately via DynamicBucket.Get()
 		taguuid := format.UserTag(tag, uuid)
-		newLimit := int64(determineSpeedLimit(l.SpeedLimit, limit)) * 1000000 / 8
+		newLimit := int64(determineSpeedLimit(determineSpeedLimit(l.SpeedLimit, int(info.SpeedLimit.Load())), limit)) * 1000000 / 8
 		if newLimit > 0 {
 			if v, ok := l.SpeedLimiter.Load(taguuid); ok {
 				v.(*rate.DynamicBucket).Update(newLimit)
+			} else {
+				l.SpeedLimiter.Store(taguuid, rate.NewDynamicBucket(newLimit))
 			}
 		}
 	} else {
 		return errors.New("not found")
 	}
 	return nil
+}
+
+// Expiry is driven by the periodic checker as well as new connections, so a
+// single long-lived connection is restored without needing another handshake.
+func (l *Limiter) ExpireDynamicSpeedLimits(now time.Time) {
+	l.UserLimitInfo.Range(func(key, value any) bool {
+		info := value.(*UserLimitInfo)
+		if expiry := info.ExpireTime.Load(); expiry > 0 && expiry <= now.Unix() {
+			l.expireDynamicLimit(key.(string), info, now)
+		}
+		return true
+	})
+}
+
+func (l *Limiter) expireDynamicLimit(key string, info *UserLimitInfo, now time.Time) {
+	info.dynamicMu.Lock()
+	defer info.dynamicMu.Unlock()
+	if expiry := info.ExpireTime.Load(); expiry == 0 || expiry > now.Unix() {
+		return
+	}
+	info.DynamicSpeedLimit.Store(0)
+	info.ExpireTime.Store(0)
+	restored := int64(determineSpeedLimit(l.SpeedLimit, int(info.SpeedLimit.Load()))) * 1000000 / 8
+	if bucket, ok := l.SpeedLimiter.Load(key); ok {
+		bucket.(*rate.DynamicBucket).Update(restored)
+	}
 }
 
 func (l *Limiter) getAliveIp(uid int) int {
@@ -239,17 +279,11 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 		uid = u.UID
 		expire := u.ExpireTime.Load()
 		speedLimit := int(u.SpeedLimit.Load())
-		if expire < time.Now().Unix() && expire != 0 {
-			if speedLimit != 0 {
-				userLimit = speedLimit
-				u.DynamicSpeedLimit.Store(0)
-				u.ExpireTime.Store(0)
-			} else {
-				l.UserLimitInfo.Delete(taguuid)
-			}
-		} else {
-			userLimit = determineSpeedLimit(speedLimit, int(u.DynamicSpeedLimit.Load()))
+		if expire <= time.Now().Unix() && expire != 0 {
+			l.expireDynamicLimit(taguuid, u, time.Now())
 		}
+		userLimit = determineSpeedLimit(speedLimit, int(u.DynamicSpeedLimit.Load()))
+
 	} else {
 		return nil, true
 	}
@@ -325,7 +359,7 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 	}
 
 	limit := int64(determineSpeedLimit(nodeLimit, userLimit)) * 1000000 / 8
-	if limit > 0 {
+	if limit > 0 || l.DynamicSpeedLimitEnabled {
 		// Return existing DynamicBucket — connections share it and see live updates
 		if v, ok := l.SpeedLimiter.Load(taguuid); ok {
 			return v.(*rate.DynamicBucket), false
