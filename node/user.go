@@ -2,36 +2,41 @@ package node
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 
 	"github.com/Sakawat-hossain/V2bX/api/panel"
 	log "github.com/sirupsen/logrus"
 )
 
 func (c *Controller) reportUserTrafficTask(ctx context.Context) (err error) {
-	userTraffic, _ := c.server.GetUserTrafficSlice(c.tag, true)
-	if len(userTraffic) > 0 {
-		err = c.getAPIClient().ReportUserTrafficCtx(ctx, userTraffic)
-		if err != nil {
-			// W3.1 / audit #13: GetUserTrafficSlice already swapped the
-			// counters to zero. Push failed, so add the deltas back on top
-			// of any traffic that accrued during the in-flight call —
-			// otherwise this period's accounting is lost forever and
-			// users effectively get free traffic on every panel hiccup.
-			if rerr := c.server.ReturnUserTraffic(c.tag, userTraffic); rerr != nil {
-				log.WithFields(log.Fields{
-					"tag": c.tag,
-					"err": rerr,
-				}).Warn("Failed to backfill traffic after report failure; some traffic accounting lost")
-			} else {
-				log.WithFields(log.Fields{
-					"tag":   c.tag,
-					"err":   err,
-					"users": len(userTraffic),
-				}).Info("Report user traffic failed; backfilled counters")
-			}
+	c.reportMu.Lock()
+	defer c.reportMu.Unlock()
+	userTraffic, fetchErr := c.server.GetUserTrafficSlice(c.tag, true)
+	if fetchErr != nil {
+		log.WithField("tag", c.tag).WithError(fetchErr).Warn("Read traffic counters failed; retry next cycle")
+	}
+	c.recordDynamicTraffic(userTraffic)
+	c.queueTraffic(userTraffic)
+	if c.pendingTraffic == nil && len(c.queuedTraffic) > 0 {
+		id, idErr := newTrafficBatchID()
+		if idErr != nil {
+			log.WithField("tag", c.tag).WithError(idErr).Warn("Create traffic batch id failed; queued counters retained")
+			return nil
+		}
+		n := min(1000, len(c.queuedTraffic))
+		c.pendingTraffic = &trafficBatch{ID: id, Users: append([]panel.UserTraffic(nil), c.queuedTraffic[:n]...)}
+		c.queuedTraffic = c.queuedTraffic[n:]
+	}
+
+	if batch := c.pendingTraffic; batch != nil {
+		userTraffic = batch.Users
+		if reportErr := c.getAPIClient().ReportTrafficBatchCtx(ctx, batch.ID, batch.Users); reportErr != nil {
+			log.WithField("tag", c.tag).WithError(reportErr).Warn("Traffic batch retained for retry")
 		} else {
-			log.WithField("tag", c.tag).Infof("Report %d users traffic", len(userTraffic))
-			log.WithField("tag", c.tag).Debugf("User traffic: %+v", userTraffic)
+			c.pendingTraffic = nil
+			log.WithField("tag", c.tag).Infof("Report %d users traffic", len(batch.Users))
 		}
 	}
 
@@ -99,4 +104,69 @@ func compareUserList(old, new []panel.UserInfo) (deleted, added, modified []pane
 	}
 
 	return deleted, added, modified
+}
+
+// A batch is never merged with fresh counters while its result is uncertain.
+// Pending batches live in memory; a process crash can still lose unreported traffic.
+type trafficBatch struct {
+	ID    string
+	Users []panel.UserTraffic
+}
+
+func newTrafficBatchID() (string, error) {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", fmt.Errorf("create traffic batch id: %w", err)
+	}
+	return hex.EncodeToString(id[:]), nil
+}
+
+func (c *Controller) dynamicSpeedLimitEnabled() bool {
+	d := c.LimitConfig.DynamicSpeedLimitConfig
+	return c.LimitConfig.EnableDynamicSpeedLimit && d != nil && d.Periodic > 0 && d.Traffic > 0 && d.SpeedLimit > 0 && d.ExpireTime > 0
+}
+
+// Traffic is measured in bytes and counted once, when counters are extracted,
+// not on each retry of an unacknowledged report.
+func (c *Controller) recordDynamicTraffic(traffic []panel.UserTraffic) {
+	if !c.dynamicSpeedLimitEnabled() || c.limiter == nil {
+		return
+	}
+	totals := make(map[int]int64, len(traffic))
+	for _, t := range traffic {
+		totals[t.UID] += t.Upload + t.Download
+	}
+	c.trafficMu.Lock()
+	defer c.trafficMu.Unlock()
+	if c.traffic == nil {
+		c.traffic = make(map[string]int64)
+	}
+	c.limiter.UUIDtoUID.Range(func(key, value any) bool {
+		if amount := totals[value.(int)]; amount > 0 {
+			c.traffic[key.(string)] += amount
+		}
+		return true
+	})
+}
+
+// Aggregate fresh deltas separately while the immutable in-flight batch retries.
+// Memory grows with distinct users, rather than the number of failed cycles.
+func (c *Controller) queueTraffic(fresh []panel.UserTraffic) {
+	if len(fresh) == 0 {
+		return
+	}
+	totals := make(map[int]panel.UserTraffic, len(c.queuedTraffic)+len(fresh))
+	for _, list := range [][]panel.UserTraffic{c.queuedTraffic, fresh} {
+		for _, t := range list {
+			v := totals[t.UID]
+			v.UID = t.UID
+			v.Upload += t.Upload
+			v.Download += t.Download
+			totals[t.UID] = v
+		}
+	}
+	c.queuedTraffic = make([]panel.UserTraffic, 0, len(totals))
+	for _, t := range totals {
+		c.queuedTraffic = append(c.queuedTraffic, t)
+	}
 }

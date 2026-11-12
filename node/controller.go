@@ -23,10 +23,14 @@ type Controller struct {
 	// SpeedChecker on independent tickers. trafficMu serializes the map
 	// accesses (Go forbids concurrent map write + delete even if values
 	// aren't aliased).
-	traffic   map[string]int64
-	trafficMu sync.Mutex
-	userList  []panel.UserInfo
-	aliveMap  map[int]int
+	traffic        map[string]int64
+	trafficMu      sync.Mutex
+	userList       []panel.UserInfo
+	reportMu       sync.Mutex
+	syncMu         sync.Mutex
+	pendingTraffic *trafficBatch
+	queuedTraffic  []panel.UserTraffic
+	aliveMap       map[int]int
 	// W2.4 / audit #4 #16: info is replaced on every nodeInfoMonitor tick
 	// and concurrently read by reportUserTrafficTask. atomic.Pointer keeps
 	// reads racefree without forcing every caller through a mutex.

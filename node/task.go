@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/Sakawat-hossain/V2bX/api/panel"
@@ -47,7 +48,7 @@ func (c *Controller) startTasks(node *panel.NodeInfo) {
 			_ = c.renewCertPeriodic.Start(true)
 		}
 	}
-	if c.LimitConfig.EnableDynamicSpeedLimit {
+	if c.dynamicSpeedLimitEnabled() {
 		// W2.4: initialize under trafficMu in case startTasks is ever called
 		// concurrently with a stale ticker firing (rebuild-on-reload path).
 		c.trafficMu.Lock()
@@ -58,11 +59,14 @@ func (c *Controller) startTasks(node *panel.NodeInfo) {
 			Interval:   time.Duration(c.LimitConfig.DynamicSpeedLimitConfig.Periodic) * time.Second,
 			ExecuteCtx: c.SpeedChecker,
 		}
+		_ = c.dynamicSpeedLimitPeriodic.Start(false)
 		log.Printf("[%s: %d] Start dynamic speed limit", c.getAPIClient().NodeType, c.getAPIClient().NodeId)
 	}
 }
 
 func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
+	c.syncMu.Lock()
+	defer c.syncMu.Unlock()
 	api := c.getAPIClient()
 	// get node info — W3.4: ctx propagates the task watchdog deadline so an
 	// unresponsive panel can't hang the three serial requests indefinitely.
@@ -75,6 +79,13 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 		return nil
 	}
 
+	nodeApplied := newN == nil
+	defer func() {
+		if !nodeApplied {
+			api.InvalidateNodeInfo()
+		}
+	}()
+
 	// get user info
 	newU, err := api.GetUserListCtx(ctx)
 	if err != nil {
@@ -84,6 +95,13 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 		}).Error("Get user list failed")
 		return nil
 	}
+
+	applied := newU == nil
+	defer func() {
+		if !applied {
+			api.InvalidateUserList()
+		}
+	}()
 
 	// get user alive
 	newA, err := api.GetUserAliveCtx(ctx)
@@ -96,6 +114,7 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 	}
 
 	if newN != nil {
+		nodeApplied = true
 		// Node config hash changed — update metadata only, DO NOT tear down
 		// the inbound handler to avoid disconnecting all active users.
 		// Full inbound rebuild is only done on config file change (via watcher).
@@ -115,6 +134,7 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 				"tag": c.tag,
 				"err": err,
 			}).Error("Update Rule failed")
+			nodeApplied = false
 		}
 
 		// Update custom outbounds dynamically
@@ -123,6 +143,7 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 				"tag": c.tag,
 				"err": err,
 			}).Error("Add custom outbounds failed")
+			nodeApplied = false
 		}
 
 		// Update nodeReportMinTraffic in core
@@ -138,6 +159,7 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 				"tag": c.tag,
 				"err": err,
 			}).Error("Update DNS failed")
+			nodeApplied = false
 		}
 
 		// Check interval changes
@@ -169,58 +191,20 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 	if newU == nil {
 		return nil
 	}
-	deleted, added, modified := compareUserList(c.userList, newU)
-	// W2.4: snapshot the current NodeInfo pointer once for the rest of this
-	// tick; downstream calls must not re-Load to avoid mismatches.
-	curInfo := c.info.Load()
-	if len(deleted) > 0 {
-		// have deleted users
-		err = c.server.DelUsers(deleted, c.tag, curInfo)
-		if err != nil {
-			log.WithFields(log.Fields{
-				"tag": c.tag,
-				"err": err,
-			}).Error("Delete users failed")
-			return nil
-		}
+	if err := c.applyUserList(newU); err != nil {
+		log.WithField("tag", c.tag).WithError(err).Error("Apply users failed; full snapshot will be retried")
+		return nil
 	}
-	if len(added) > 0 {
-		// have added users
-		_, err = c.server.AddUsers(&vCore.AddUsersParams{
-			Tag:      c.tag,
-			NodeInfo: curInfo,
-			Users:    added,
-		})
-		if err != nil {
-			log.WithFields(log.Fields{
-				"tag": c.tag,
-				"err": err,
-			}).Error("Add users failed")
-			return nil
-		}
-	}
-	if len(added) > 0 || len(deleted) > 0 || len(modified) > 0 {
-		// update Limiter
-		c.limiter.UpdateUser(c.tag, added, deleted, modified)
-		// clear traffic record
-		if c.LimitConfig.EnableDynamicSpeedLimit {
-			// W2.4: trafficMu serializes with SpeedChecker.
-			c.trafficMu.Lock()
-			for i := range deleted {
-				delete(c.traffic, deleted[i].Uuid)
-			}
-			c.trafficMu.Unlock()
-		}
-	}
-	c.userList = newU
-	if len(added)+len(deleted)+len(modified) != 0 {
-		log.WithField("tag", c.tag).
-			Infof("%d user deleted, %d user added, %d user modified", len(deleted), len(added), len(modified))
-	}
+	applied = true
+
 	return nil
 }
 
 func (c *Controller) SpeedChecker(_ context.Context) error {
+	if !c.dynamicSpeedLimitEnabled() {
+		return nil
+	}
+	c.limiter.ExpireDynamicSpeedLimits(time.Now())
 	// W2.4: snapshot keys under trafficMu so we can release the lock before
 	// the (potentially slow) UpdateDynamicSpeedLimit call. Concurrent
 	// nodeInfoMonitor / startTasks reinitialisation are now safe.
@@ -246,6 +230,49 @@ func (c *Controller) SpeedChecker(_ context.Context) error {
 		if err != nil {
 			log.WithField("err", err).Error("Update dynamic speed limit failed")
 		}
+	}
+	return nil
+}
+
+// Commit each user operation separately so a later failure can retry without
+// deleting or adding the users whose changes already succeeded.
+func (c *Controller) applyUserList(users []panel.UserInfo) error {
+	deleted, added, modified := compareUserList(c.userList, users)
+	current := make(map[string]panel.UserInfo, len(c.userList))
+	for _, user := range c.userList {
+		current[user.Uuid] = user
+	}
+	defer func() {
+		c.userList = make([]panel.UserInfo, 0, len(current))
+		for _, user := range current {
+			c.userList = append(c.userList, user)
+		}
+	}()
+	info := c.info.Load()
+	for _, user := range deleted {
+		if err := c.server.DelUsers([]panel.UserInfo{user}, c.tag, info); err != nil {
+			return err
+		}
+		c.limiter.UpdateUser(c.tag, nil, []panel.UserInfo{user}, nil)
+		delete(current, user.Uuid)
+		c.trafficMu.Lock()
+		delete(c.traffic, user.Uuid)
+		c.trafficMu.Unlock()
+	}
+	for _, user := range added {
+		n, err := c.server.AddUsers(&vCore.AddUsersParams{Tag: c.tag, NodeInfo: info, Users: []panel.UserInfo{user}})
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return fmt.Errorf("core accepted %d of 1 requested users", n)
+		}
+		c.limiter.UpdateUser(c.tag, []panel.UserInfo{user}, nil, nil)
+		current[user.Uuid] = user
+	}
+	c.limiter.UpdateUser(c.tag, nil, nil, modified)
+	for _, user := range modified {
+		current[user.Uuid] = user
 	}
 	return nil
 }

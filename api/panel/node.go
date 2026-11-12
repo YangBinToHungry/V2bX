@@ -200,7 +200,15 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 // GetNodeInfoCtx is the ctx-aware variant used by the task framework so a
 // watchdog timeout can cancel the HTTP request instead of leaking the
 // goroutine + response body. W3.2 / W3.4 / audit #25 #44.
+func (c *Client) InvalidateNodeInfo() { c.nodeEtag = ""; c.responseBodyHash = "" }
+
 func (c *Client) GetNodeInfoCtx(ctx context.Context) (node *NodeInfo, err error) {
+	defer func() {
+		if err != nil {
+			c.InvalidateNodeInfo()
+		}
+	}()
+
 	var path string
 	if c.ApiVersion == 2 {
 		path = "/api/v2/server/config"
